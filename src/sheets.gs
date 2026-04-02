@@ -8,7 +8,137 @@ function onOpen() {
     .createMenu("Speedrev")
     .addItem("Refresh Leads", "syncLeads")
     .addItem("Send Selected Lead", "sendSelectedLead")
+    .addSeparator()
+    .addItem("Refresh Dashboard", "syncDashboard")
     .addToUi();
+}
+
+function syncDashboard() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+    // Get or create Dashboard tab
+    var dash = ss.getSheetByName("Dashboard");
+    if (!dash) {
+      dash = ss.insertSheet("Dashboard");
+    }
+    dash.clearContents();
+    dash.clearFormats();
+
+    // Fetch all outreach records with sent_at
+    var response = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/outreach?select=status,generated_at,sent_at", {
+      method: "get",
+      headers: {
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: "Bearer " + SUPABASE_SERVICE_KEY,
+        "Content-Type": "application/json"
+      },
+      muteHttpExceptions: true
+    });
+
+    var status = response.getResponseCode();
+    if (status !== 200) {
+      throw new Error("Supabase error (" + status + "): " + response.getContentText());
+    }
+
+    var rows = JSON.parse(response.getContentText());
+
+    // Fetch total leads count
+    var leadsResponse = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/leads?select=id", {
+      method: "get",
+      headers: {
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: "Bearer " + SUPABASE_SERVICE_KEY,
+        "Content-Type": "application/json",
+        Prefer: "count=exact"
+      },
+      muteHttpExceptions: true
+    });
+    var totalLeads = JSON.parse(leadsResponse.getContentText()).length;
+
+    // Calculate stats
+    var totalMessages = rows.length;
+    var totalSent = 0;
+    var totalPending = 0;
+    var sentToday = 0;
+    var sentThisWeek = 0;
+
+    var now = new Date();
+    var startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var startOfWeek = new Date(startOfToday);
+    startOfWeek.setDate(startOfToday.getDate() - startOfToday.getDay());
+
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (row.status === "sent") {
+        totalSent++;
+        if (row.sent_at) {
+          var sentAt = new Date(row.sent_at);
+          if (sentAt >= startOfToday) sentToday++;
+          if (sentAt >= startOfWeek) sentThisWeek++;
+        }
+      } else {
+        totalPending++;
+      }
+    }
+
+    var sentPct = totalMessages > 0 ? Math.round((totalSent / totalMessages) * 100) : 0;
+
+    // Write dashboard
+    var bg = "#1a1a2e";
+    var white = "#ffffff";
+    var green = "#c6efce";
+    var yellow = "#ffeb9c";
+
+    // Title
+    dash.getRange("A1:D1").merge();
+    dash.getRange("A1").setValue("Speedrev Outreach Dashboard");
+    dash.getRange("A1").setBackground(bg).setFontColor(white).setFontSize(16).setFontWeight("bold");
+
+    // Last updated
+    dash.getRange("A2:D2").merge();
+    dash.getRange("A2").setValue("Last updated: " + now.toLocaleString());
+    dash.getRange("A2").setFontColor("#888888").setFontSize(10);
+
+    // Spacer
+    dash.getRange("A3").setValue("");
+
+    // Stats header
+    var headerRow = 4;
+    var headers = ["Metric", "Value"];
+    dash.getRange(headerRow, 1, 1, 2).setValues([headers]);
+    dash.getRange(headerRow, 1, 1, 2).setBackground(bg).setFontColor(white).setFontWeight("bold");
+
+    // Stats rows
+    var stats = [
+      ["Total Leads Loaded", totalLeads],
+      ["Messages Generated", totalMessages],
+      ["Emails Sent", totalSent],
+      ["Emails Pending", totalPending],
+      ["Send Rate", sentPct + "%"],
+      ["Sent Today", sentToday],
+      ["Sent This Week", sentThisWeek]
+    ];
+
+    dash.getRange(headerRow + 1, 1, stats.length, 2).setValues(stats);
+
+    // Highlight sent row green, pending yellow
+    dash.getRange(headerRow + 3, 1, 1, 2).setBackground(green);  // Emails Sent
+    dash.getRange(headerRow + 4, 1, 1, 2).setBackground(yellow);  // Emails Pending
+
+    // Format
+    dash.setColumnWidth(1, 200);
+    dash.setColumnWidth(2, 120);
+    dash.getRange(headerRow + 1, 1, stats.length, 2).setBorder(true, true, true, true, true, true);
+
+    // Activate dashboard tab
+    ss.setActiveSheet(dash);
+
+    SpreadsheetApp.getUi().alert("Dashboard updated.");
+
+  } catch (err) {
+    SpreadsheetApp.getUi().alert("Dashboard error: " + err.message);
+  }
 }
 
 function generateSubjectLine(message) {
