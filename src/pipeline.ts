@@ -6,7 +6,6 @@ import * as dotenv from "dotenv";
 
 dotenv.config();
 
-
 // ── Config ───────────────────────────────────────────────────────────────────
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -35,7 +34,7 @@ interface ApolloRow {
 }
 
 // ── Message generation ────────────────────────────────────────────────────────
-async function generateMessage(lead: ApolloRow): Promise<string> {
+async function generateMessage1(lead: ApolloRow): Promise<string> {
   const prompt = `You are Steve, founder of Speedrev — a GTM engineering firm that builds AI-powered outbound systems for recruiting agencies.
 
 Write a cold email to ${lead["First Name"]} at ${lead["Company Name"]}.
@@ -83,6 +82,69 @@ Write the message now:`;
   return (response.content[0] as { type: "text"; text: string }).text.trim();
 }
 
+async function generateMessage2(lead: ApolloRow): Promise<string> {
+  const prompt = `You are Steve, founder of Speedrev — a GTM engineering firm that builds AI-powered outbound systems for recruiting agencies.
+
+Write a short follow-up email (Message 2) to ${lead["First Name"]} at ${lead["Company Name"]}. This is a bump sent 3 days after the first email with no reply.
+
+HARD RULES:
+- 2 sentences max
+- Don't reference the first email directly ("just following up", "circling back", "checking in")
+- Don't be needy or apologetic
+- Add a new angle or observation — don't repeat Message 1
+- No formal sign-off, no subject line
+- Peer-to-peer tone
+
+The goal is one reply. Keep it short and confident.
+
+Metadata:
+Name: ${lead["First Name"]} ${lead["Last Name"]}
+Title: ${lead["Title"]}
+Company: ${lead["Company Name"]}
+Industry: ${lead["Industry"]}
+
+Write the message now:`;
+
+  const response = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 150,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  return (response.content[0] as { type: "text"; text: string }).text.trim();
+}
+
+async function generateMessage3(lead: ApolloRow): Promise<string> {
+  const prompt = `You are Steve, founder of Speedrev — a GTM engineering firm that builds AI-powered outbound systems for recruiting agencies.
+
+Write a breakup email (Message 3) to ${lead["First Name"]} at ${lead["Company Name"]}. This is the final email in a sequence, sent 5 days after Message 2 with no reply.
+
+HARD RULES:
+- 2 sentences max
+- Closing the loop — make it clear this is the last message
+- No guilt, no pressure, no "I'll leave you alone"
+- Leave the door open naturally
+- No formal sign-off, no subject line
+
+The goal is to get a reply from someone who was interested but busy.
+
+Metadata:
+Name: ${lead["First Name"]} ${lead["Last Name"]}
+Title: ${lead["Title"]}
+Company: ${lead["Company Name"]}
+Industry: ${lead["Industry"]}
+
+Write the message now:`;
+
+  const response = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 150,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  return (response.content[0] as { type: "text"; text: string }).text.trim();
+}
+
 // ── Main pipeline ─────────────────────────────────────────────────────────────
 async function run(csvPath: string) {
   if (!fs.existsSync(csvPath)) {
@@ -101,6 +163,10 @@ async function run(csvPath: string) {
   let success = 0;
   let skipped = 0;
   let failed = 0;
+
+  const now = new Date();
+  const sendAfterMsg2 = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000); // +3 days
+  const sendAfterMsg3 = new Date(now.getTime() + 8 * 24 * 60 * 60 * 1000); // +8 days (3+5)
 
   for (const row of rows) {
     const email = row["Email"]?.trim();
@@ -139,34 +205,61 @@ async function run(csvPath: string) {
       .single();
 
     if (leadError || !lead) {
-  console.error(`❌ Failed to upsert ${email}:`, JSON.stringify(leadError));
+      console.error(`❌ Failed to upsert ${email}:`, JSON.stringify(leadError));
       failed++;
       continue;
     }
 
-    // 2. Generate message
-    process.stdout.write(`⏳ Generating message for ${name}...`);
-    let message1: string;
+    // 2. Check if outreach already exists for this lead
+    const { data: existing } = await supabase
+      .from("outreach")
+      .select("id")
+      .eq("lead_id", lead.id)
+      .limit(1);
+
+    if (existing && existing.length > 0) {
+      console.log(`⏭  Skipping ${name} — outreach already exists`);
+      skipped++;
+      continue;
+    }
+
+    // 3. Generate all 3 messages
+    process.stdout.write(`⏳ Generating messages for ${name}...`);
+    let message1: string, message2: string, message3: string;
     try {
-      message1 = await generateMessage(row);
+      message1 = await generateMessage1(row);
+      message2 = await generateMessage2(row);
+      message3 = await generateMessage3(row);
     } catch (err: any) {
       console.error(`\n❌ Claude error for ${email}: ${err.message}`);
       failed++;
       continue;
     }
 
-    // 3. Insert outreach record
-    // 3. Upsert outreach record
-const { error: outreachError } = await supabase
-  .from("outreach")
-  .upsert(
-    {
-      lead_id: lead.id,
-      message1,
-      status: "new",
-    },
-    { onConflict: "lead_id" }
-  );
+    // 4. Insert 3 outreach rows
+    const { error: outreachError } = await supabase.from("outreach").insert([
+      {
+        lead_id: lead.id,
+        message1,
+        status: "new",
+        message_type: "message1",
+        send_after: now.toISOString(),
+      },
+      {
+        lead_id: lead.id,
+        message1: message2,
+        status: "new",
+        message_type: "message2",
+        send_after: sendAfterMsg2.toISOString(),
+      },
+      {
+        lead_id: lead.id,
+        message1: message3,
+        status: "new",
+        message_type: "message3",
+        send_after: sendAfterMsg3.toISOString(),
+      },
+    ]);
 
     if (outreachError) {
       console.error(`\n❌ Failed to insert outreach for ${email}: ${outreachError.message}`);

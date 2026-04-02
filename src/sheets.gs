@@ -3,7 +3,7 @@ const SUPABASE_SERVICE_KEY = "YOUR_SUPABASE_SERVICE_KEY";
 const ANTHROPIC_API_KEY = "YOUR_ANTHROPIC_API_KEY";
 const HUBSPOT_API_KEY = "YOUR_HUBSPOT_API_KEY";
 
-var HEADERS = ["First Name", "Last Name", "Email", "Title", "Company", "Industry", "Headcount", "LinkedIn", "Tech Stack", "Keywords", "Message1", "Status", "Generated At", "Outreach ID"];
+var HEADERS = ["First Name", "Last Name", "Email", "Title", "Company", "Industry", "Headcount", "LinkedIn", "Tech Stack", "Keywords", "Message", "Message Type", "Send After", "Status", "Generated At", "Outreach ID"];
 
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -116,14 +116,26 @@ function sendSelectedLead() {
     var lastName = get("Last Name");
     var title = get("Title");
     var company = get("Company");
-    var message = get("Message1");
+    var message = get("Message");
     var outreachId = get("Outreach ID");
+    var messageType = get("Message Type");
+    var sendAfter = get("Send After");
 
     if (!email) { SpreadsheetApp.getUi().alert("No email found for this lead."); return; }
     if (!message) { SpreadsheetApp.getUi().alert("No message found for this lead."); return; }
 
+    // Time gate check
+    if (sendAfter) {
+      var sendAfterDate = new Date(sendAfter);
+      var now = new Date();
+      if (now < sendAfterDate) {
+        SpreadsheetApp.getUi().alert(messageType + " cannot be sent until " + sendAfterDate.toLocaleDateString() + ". Please wait.");
+        return;
+      }
+    }
+
     // Check Supabase directly — source of truth for sent status
-    var checkResponse = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/outreach?id=eq." + outreachId + "&select=status", {
+    var checkResponse = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/outreach?id=eq." + outreachId + "&select=status,lead_id,message_type", {
       method: "get",
       headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: "Bearer " + SUPABASE_SERVICE_KEY, "Content-Type": "application/json" },
       muteHttpExceptions: true
@@ -138,9 +150,28 @@ function sendSelectedLead() {
       return;
     }
 
+    // For message2/message3 — verify previous message was sent
+    if (messageType === "message2" || messageType === "message3") {
+      var leadId = checkData.length > 0 ? checkData[0].lead_id : null;
+      var prevType = messageType === "message2" ? "message1" : "message2";
+
+      if (leadId) {
+        var prevResponse = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/outreach?lead_id=eq." + leadId + "&message_type=eq." + prevType + "&select=status", {
+          method: "get",
+          headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: "Bearer " + SUPABASE_SERVICE_KEY, "Content-Type": "application/json" },
+          muteHttpExceptions: true
+        });
+        var prevData = JSON.parse(prevResponse.getContentText());
+        if (!prevData.length || prevData[0].status !== "sent") {
+          SpreadsheetApp.getUi().alert("Cannot send " + messageType + " — " + prevType + " has not been sent yet.");
+          return;
+        }
+      }
+    }
+
     var subject = generateSubjectLine(message);
     var ui = SpreadsheetApp.getUi();
-    var confirm = ui.alert("Confirm Send", "To: " + email + "\nSubject: " + subject + "\n\n" + message, ui.ButtonSet.OK_CANCEL);
+    var confirm = ui.alert("Confirm Send", "To: " + email + "\nType: " + messageType + "\nSubject: " + subject + "\n\n" + message, ui.ButtonSet.OK_CANCEL);
     if (confirm !== ui.Button.OK) return;
 
     GmailApp.sendEmail(email, subject, message);
@@ -157,7 +188,7 @@ function sendSelectedLead() {
     var statusCol = HEADERS.indexOf("Status") + 1;
     sheet.getRange(row, statusCol).setValue("sent");
     sheet.getRange(row, statusCol).setBackground("#c6efce");
-    ui.alert("Sent to " + firstName + " (" + email + ") and logged to HubSpot");
+    ui.alert("Sent " + messageType + " to " + firstName + " (" + email + ") and logged to HubSpot");
 
   } catch (err) {
     SpreadsheetApp.getUi().alert("Error: " + err.message);
@@ -168,7 +199,7 @@ function syncLeads() {
   try {
     var sheet = getLeadsSheet();
 
-    var response = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/outreach?select=id,message1,status,generated_at,leads(first_name,last_name,email,title,company_name,industry,headcount,linkedin_url,tech_stack,keywords)&order=generated_at.desc", {
+    var response = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/outreach?select=id,message1,status,message_type,send_after,generated_at,leads(first_name,last_name,email,title,company_name,industry,headcount,linkedin_url,tech_stack,keywords)&order=generated_at.desc", {
       method: "get",
       headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: "Bearer " + SUPABASE_SERVICE_KEY, "Content-Type": "application/json" },
       muteHttpExceptions: true
@@ -217,6 +248,8 @@ function syncLeads() {
         row.leads ? row.leads.tech_stack || "" : "",
         row.leads ? row.leads.keywords || "" : "",
         row.message1 || "",
+        row.message_type || "message1",
+        row.send_after || "",
         row.status || "",
         row.generated_at || "",
         row.id || ""
@@ -241,8 +274,9 @@ function syncLeads() {
     if (newRows.length > 0) {
       var appendRow = sheet.getLastRow() + 1;
       sheet.getRange(appendRow, 1, newRows.length, HEADERS.length).setValues(newRows);
-      sheet.getRange(appendRow, 11, newRows.length, 1).setWrap(true);
-      sheet.setColumnWidth(11, 400);
+      var msgCol = HEADERS.indexOf("Message") + 1;
+      sheet.getRange(appendRow, msgCol, newRows.length, 1).setWrap(true);
+      sheet.setColumnWidth(msgCol, 400);
       for (var j = 0; j < newRowStatuses.length; j++) {
         if (newRowStatuses[j] === "sent") {
           sheet.getRange(appendRow + j, statusCol).setBackground("#c6efce");
@@ -251,7 +285,7 @@ function syncLeads() {
     }
 
     sheet.autoResizeColumns(1, HEADERS.length);
-    SpreadsheetApp.getUi().alert("Synced: " + newRows.length + " new leads added, " + updated + " updated.");
+    SpreadsheetApp.getUi().alert("Synced: " + newRows.length + " new rows added, " + updated + " updated.");
 
   } catch (err) {
     SpreadsheetApp.getUi().alert("Error: " + err.message);
@@ -266,7 +300,7 @@ function syncDashboard() {
     dash.clearContents();
     dash.clearFormats();
 
-    var response = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/outreach?select=status,generated_at,sent_at", {
+    var response = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/outreach?select=status,message_type,generated_at,sent_at", {
       method: "get",
       headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: "Bearer " + SUPABASE_SERVICE_KEY, "Content-Type": "application/json" },
       muteHttpExceptions: true
@@ -282,6 +316,7 @@ function syncDashboard() {
     var totalLeads = JSON.parse(leadsResponse.getContentText()).length;
 
     var totalSent = 0, totalPending = 0, sentToday = 0, sentThisWeek = 0;
+    var msg1Sent = 0, msg2Sent = 0, msg3Sent = 0;
     var now = new Date();
     var startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     var startOfWeek = new Date(startOfToday);
@@ -291,6 +326,9 @@ function syncDashboard() {
       var row = rows[i];
       if (row.status === "sent") {
         totalSent++;
+        if (row.message_type === "message1") msg1Sent++;
+        if (row.message_type === "message2") msg2Sent++;
+        if (row.message_type === "message3") msg3Sent++;
         if (row.sent_at) {
           var sentAt = new Date(row.sent_at);
           if (sentAt >= startOfToday) sentToday++;
@@ -312,18 +350,20 @@ function syncDashboard() {
       .setBackground(bg).setFontColor(white).setFontWeight("bold");
 
     var stats = [
-      ["Total Leads Loaded", totalLeads],
-      ["Messages Generated", rows.length],
-      ["Emails Sent", totalSent],
-      ["Emails Pending", totalPending],
+      ["Total Leads", totalLeads],
+      ["Total Emails Sent", totalSent],
+      ["Message 1 Sent", msg1Sent],
+      ["Message 2 Sent", msg2Sent],
+      ["Message 3 Sent", msg3Sent],
+      ["Pending", totalPending],
       ["Send Rate", sentPct + "%"],
       ["Sent Today", sentToday],
       ["Sent This Week", sentThisWeek]
     ];
 
     dash.getRange(5, 1, stats.length, 2).setValues(stats);
-    dash.getRange(7, 1, 1, 2).setBackground(green);
-    dash.getRange(8, 1, 1, 2).setBackground(yellow);
+    dash.getRange(6, 1, 1, 2).setBackground(green);
+    dash.getRange(11, 1, 1, 2).setBackground(yellow);
     dash.setColumnWidth(1, 200);
     dash.setColumnWidth(2, 120);
     dash.getRange(5, 1, stats.length, 2).setBorder(true, true, true, true, true, true);
