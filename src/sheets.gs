@@ -3,6 +3,8 @@ const SUPABASE_SERVICE_KEY = "YOUR_SUPABASE_SERVICE_KEY";
 const ANTHROPIC_API_KEY = "YOUR_ANTHROPIC_API_KEY";
 const HUBSPOT_API_KEY = "YOUR_HUBSPOT_API_KEY";
 
+var HEADERS = ["First Name", "Last Name", "Email", "Title", "Company", "Industry", "Headcount", "LinkedIn", "Tech Stack", "Keywords", "Message1", "Status", "Generated At", "Outreach ID"];
+
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("Speedrev")
@@ -11,6 +13,13 @@ function onOpen() {
     .addSeparator()
     .addItem("Refresh Dashboard", "syncDashboard")
     .addToUi();
+}
+
+function getLeadsSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName("Leads");
+  if (!sheet) { sheet = ss.insertSheet("Leads"); }
+  return sheet;
 }
 
 function generateSubjectLine(message) {
@@ -95,13 +104,12 @@ function logEmailToHubSpot(contactId, subject, message) {
 
 function sendSelectedLead() {
   try {
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+    var sheet = getLeadsSheet();
     var row = sheet.getActiveCell().getRow();
     if (row <= 1) { SpreadsheetApp.getUi().alert("Please select a lead row first."); return; }
 
-    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    var values = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
-    function get(col) { return values[headers.indexOf(col)] || ""; }
+    var values = sheet.getRange(row, 1, 1, HEADERS.length).getValues()[0];
+    function get(col) { return values[HEADERS.indexOf(col)] || ""; }
 
     var email = get("Email");
     var firstName = get("First Name");
@@ -110,11 +118,25 @@ function sendSelectedLead() {
     var company = get("Company");
     var message = get("Message1");
     var outreachId = get("Outreach ID");
-    var status = get("Status");
 
     if (!email) { SpreadsheetApp.getUi().alert("No email found for this lead."); return; }
-    if (status === "sent") { SpreadsheetApp.getUi().alert("Already sent to " + email); return; }
     if (!message) { SpreadsheetApp.getUi().alert("No message found for this lead."); return; }
+
+    // Check Supabase directly — source of truth for sent status
+    var checkResponse = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/outreach?id=eq." + outreachId + "&select=status", {
+      method: "get",
+      headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: "Bearer " + SUPABASE_SERVICE_KEY, "Content-Type": "application/json" },
+      muteHttpExceptions: true
+    });
+
+    var checkData = JSON.parse(checkResponse.getContentText());
+    if (checkData.length > 0 && checkData[0].status === "sent") {
+      var statusCol = HEADERS.indexOf("Status") + 1;
+      sheet.getRange(row, statusCol).setValue("sent");
+      sheet.getRange(row, statusCol).setBackground("#c6efce");
+      SpreadsheetApp.getUi().alert("Already sent to " + email + " — row updated.");
+      return;
+    }
 
     var subject = generateSubjectLine(message);
     var ui = SpreadsheetApp.getUi();
@@ -132,7 +154,7 @@ function sendSelectedLead() {
       return;
     }
 
-    var statusCol = headers.indexOf("Status") + 1;
+    var statusCol = HEADERS.indexOf("Status") + 1;
     sheet.getRange(row, statusCol).setValue("sent");
     sheet.getRange(row, statusCol).setBackground("#c6efce");
     ui.alert("Sent to " + firstName + " (" + email + ") and logged to HubSpot");
@@ -144,12 +166,14 @@ function sendSelectedLead() {
 
 function syncLeads() {
   try {
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+    var sheet = getLeadsSheet();
+
     var response = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/outreach?select=id,message1,status,generated_at,leads(first_name,last_name,email,title,company_name,industry,headcount,linkedin_url,tech_stack,keywords)&order=generated_at.desc", {
       method: "get",
       headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: "Bearer " + SUPABASE_SERVICE_KEY, "Content-Type": "application/json" },
       muteHttpExceptions: true
     });
+
     var status = response.getResponseCode();
     var body = response.getContentText();
     if (status !== 200) throw new Error("Supabase error (" + status + "): " + body);
@@ -157,14 +181,31 @@ function syncLeads() {
     var rows = JSON.parse(body);
     if (!rows.length) { SpreadsheetApp.getUi().alert("No leads found."); return; }
 
-    var headers = ["First Name", "Last Name", "Email", "Title", "Company", "Industry", "Headcount", "LinkedIn", "Tech Stack", "Keywords", "Message1", "Status", "Generated At", "Outreach ID"];
-    sheet.clearContents();
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    var headerRange = sheet.getRange(1, 1, 1, headers.length);
-    headerRange.setBackground("#1a1a2e").setFontColor("#ffffff").setFontWeight("bold");
+    // Always write locked headers on row 1
+    sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
+    sheet.getRange(1, 1, 1, HEADERS.length).setBackground("#1a1a2e").setFontColor("#ffffff").setFontWeight("bold");
 
-    var data = rows.map(function(row) {
-      return [
+    // Build index of existing Outreach IDs
+    var lastRow = sheet.getLastRow();
+    var existingIds = {};
+    var outreachIdCol = HEADERS.indexOf("Outreach ID") + 1;
+    if (lastRow > 1) {
+      var existingIdValues = sheet.getRange(2, outreachIdCol, lastRow - 1, 1).getValues();
+      for (var i = 0; i < existingIdValues.length; i++) {
+        if (existingIdValues[i][0]) {
+          existingIds[existingIdValues[i][0]] = i + 2;
+        }
+      }
+    }
+
+    var statusCol = HEADERS.indexOf("Status") + 1;
+    var newRows = [];
+    var newRowStatuses = [];
+    var updated = 0;
+
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var rowData = [
         row.leads ? row.leads.first_name || "" : "",
         row.leads ? row.leads.last_name || "" : "",
         row.leads ? row.leads.email || "" : "",
@@ -180,13 +221,37 @@ function syncLeads() {
         row.generated_at || "",
         row.id || ""
       ];
-    });
 
-    sheet.getRange(2, 1, data.length, headers.length).setValues(data);
-    sheet.autoResizeColumns(1, headers.length);
-    sheet.getRange(2, 11, data.length, 1).setWrap(true);
-    sheet.setColumnWidth(11, 400);
-    SpreadsheetApp.getUi().alert("Synced " + rows.length + " leads.");
+      if (existingIds[row.id]) {
+        var sheetRow = existingIds[row.id];
+        var currentStatus = sheet.getRange(sheetRow, statusCol).getValue();
+        if (currentStatus !== row.status) {
+          sheet.getRange(sheetRow, statusCol).setValue(row.status);
+          updated++;
+        }
+        if (row.status === "sent") {
+          sheet.getRange(sheetRow, statusCol).setBackground("#c6efce");
+        }
+      } else {
+        newRows.push(rowData);
+        newRowStatuses.push(row.status);
+      }
+    }
+
+    if (newRows.length > 0) {
+      var appendRow = sheet.getLastRow() + 1;
+      sheet.getRange(appendRow, 1, newRows.length, HEADERS.length).setValues(newRows);
+      sheet.getRange(appendRow, 11, newRows.length, 1).setWrap(true);
+      sheet.setColumnWidth(11, 400);
+      for (var j = 0; j < newRowStatuses.length; j++) {
+        if (newRowStatuses[j] === "sent") {
+          sheet.getRange(appendRow + j, statusCol).setBackground("#c6efce");
+        }
+      }
+    }
+
+    sheet.autoResizeColumns(1, HEADERS.length);
+    SpreadsheetApp.getUi().alert("Synced: " + newRows.length + " new leads added, " + updated + " updated.");
 
   } catch (err) {
     SpreadsheetApp.getUi().alert("Error: " + err.message);
