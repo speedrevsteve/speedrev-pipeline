@@ -178,3 +178,34 @@ Once messages are approved in Supabase:
 4. Upload your lead list and launch
 
 For fully automated sending, Apollo's API supports adding contacts to a sequence programmatically — see `apollo_emailer_campaigns_add_contact_ids` in the Apollo API docs.
+
+---
+
+## Updating the message prompt
+
+The Claude prompt lives in `src/pipeline.ts` in the `generateMessage` function (~line 39).
+
+To tighten messages for the Google Sheets column (400px wide), add a character limit rule to the prompt:
+```
+- 300 characters max, absolutely no exceptions
+```
+
+### Re-running the pipeline after a prompt change
+
+Re-running is safe — leads are upserted by email so no duplicate leads are created. However, new outreach rows will be **added** rather than replacing existing messages.
+
+To replace existing messages instead of adding new ones, add a unique constraint in Supabase:
+
+```sql
+alter table outreach add constraint outreach_lead_id_unique unique (lead_id);
+```
+
+Then update the insert in `pipeline.ts` to upsert on `lead_id`:
+```ts
+await supabase.from("outreach").upsert(
+  { lead_id: lead.id, message1, status: "new" },
+  { onConflict: "lead_id" }
+);
+```
+
+This way re-running regenerates messages in place rather than creating duplicates.
