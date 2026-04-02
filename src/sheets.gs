@@ -13,134 +13,6 @@ function onOpen() {
     .addToUi();
 }
 
-function syncDashboard() {
-  try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-
-    // Get or create Dashboard tab
-    var dash = ss.getSheetByName("Dashboard");
-    if (!dash) {
-      dash = ss.insertSheet("Dashboard");
-    }
-    dash.clearContents();
-    dash.clearFormats();
-
-    // Fetch all outreach records with sent_at
-    var response = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/outreach?select=status,generated_at,sent_at", {
-      method: "get",
-      headers: {
-        apikey: SUPABASE_SERVICE_KEY,
-        Authorization: "Bearer " + SUPABASE_SERVICE_KEY,
-        "Content-Type": "application/json"
-      },
-      muteHttpExceptions: true
-    });
-
-    var status = response.getResponseCode();
-    if (status !== 200) {
-      throw new Error("Supabase error (" + status + "): " + response.getContentText());
-    }
-
-    var rows = JSON.parse(response.getContentText());
-
-    // Fetch total leads count
-    var leadsResponse = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/leads?select=id", {
-      method: "get",
-      headers: {
-        apikey: SUPABASE_SERVICE_KEY,
-        Authorization: "Bearer " + SUPABASE_SERVICE_KEY,
-        "Content-Type": "application/json",
-        Prefer: "count=exact"
-      },
-      muteHttpExceptions: true
-    });
-    var totalLeads = JSON.parse(leadsResponse.getContentText()).length;
-
-    // Calculate stats
-    var totalMessages = rows.length;
-    var totalSent = 0;
-    var totalPending = 0;
-    var sentToday = 0;
-    var sentThisWeek = 0;
-
-    var now = new Date();
-    var startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    var startOfWeek = new Date(startOfToday);
-    startOfWeek.setDate(startOfToday.getDate() - startOfToday.getDay());
-
-    for (var i = 0; i < rows.length; i++) {
-      var row = rows[i];
-      if (row.status === "sent") {
-        totalSent++;
-        if (row.sent_at) {
-          var sentAt = new Date(row.sent_at);
-          if (sentAt >= startOfToday) sentToday++;
-          if (sentAt >= startOfWeek) sentThisWeek++;
-        }
-      } else {
-        totalPending++;
-      }
-    }
-
-    var sentPct = totalMessages > 0 ? Math.round((totalSent / totalMessages) * 100) : 0;
-
-    // Write dashboard
-    var bg = "#1a1a2e";
-    var white = "#ffffff";
-    var green = "#c6efce";
-    var yellow = "#ffeb9c";
-
-    // Title
-    dash.getRange("A1:D1").merge();
-    dash.getRange("A1").setValue("Speedrev Outreach Dashboard");
-    dash.getRange("A1").setBackground(bg).setFontColor(white).setFontSize(16).setFontWeight("bold");
-
-    // Last updated
-    dash.getRange("A2:D2").merge();
-    dash.getRange("A2").setValue("Last updated: " + now.toLocaleString());
-    dash.getRange("A2").setFontColor("#888888").setFontSize(10);
-
-    // Spacer
-    dash.getRange("A3").setValue("");
-
-    // Stats header
-    var headerRow = 4;
-    var headers = ["Metric", "Value"];
-    dash.getRange(headerRow, 1, 1, 2).setValues([headers]);
-    dash.getRange(headerRow, 1, 1, 2).setBackground(bg).setFontColor(white).setFontWeight("bold");
-
-    // Stats rows
-    var stats = [
-      ["Total Leads Loaded", totalLeads],
-      ["Messages Generated", totalMessages],
-      ["Emails Sent", totalSent],
-      ["Emails Pending", totalPending],
-      ["Send Rate", sentPct + "%"],
-      ["Sent Today", sentToday],
-      ["Sent This Week", sentThisWeek]
-    ];
-
-    dash.getRange(headerRow + 1, 1, stats.length, 2).setValues(stats);
-
-    // Highlight sent row green, pending yellow
-    dash.getRange(headerRow + 3, 1, 1, 2).setBackground(green);  // Emails Sent
-    dash.getRange(headerRow + 4, 1, 1, 2).setBackground(yellow);  // Emails Pending
-
-    // Format
-    dash.setColumnWidth(1, 200);
-    dash.setColumnWidth(2, 120);
-    dash.getRange(headerRow + 1, 1, stats.length, 2).setBorder(true, true, true, true, true, true);
-
-    // Activate dashboard tab
-    ss.setActiveSheet(dash);
-
-    SpreadsheetApp.getUi().alert("Dashboard updated.");
-
-  } catch (err) {
-    SpreadsheetApp.getUi().alert("Dashboard error: " + err.message);
-  }
-}
-
 function generateSubjectLine(message) {
   var response = UrlFetchApp.fetch("https://api.anthropic.com/v1/messages", {
     method: "post",
@@ -159,24 +31,18 @@ function generateSubjectLine(message) {
     }),
     muteHttpExceptions: true
   });
-
   var status = response.getResponseCode();
   var body = response.getContentText();
-  if (status !== 200) {
-    throw new Error("Anthropic API failed (" + status + "): " + body);
-  }
-  var data = JSON.parse(body);
-  return data.content[0].text.trim();
+  if (status !== 200) throw new Error("Anthropic API failed (" + status + "): " + body);
+  return JSON.parse(body).content[0].text.trim();
 }
 
 function updateStatus(outreachId) {
   Logger.log("updateStatus called with outreachId: " + outreachId);
-
   if (!outreachId) {
     SpreadsheetApp.getUi().alert("Warning: no Outreach ID found — status not updated in Supabase.");
     return;
   }
-
   var response = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/outreach?id=eq." + outreachId, {
     method: "patch",
     headers: {
@@ -185,13 +51,9 @@ function updateStatus(outreachId) {
       "Content-Type": "application/json",
       Prefer: "return=minimal"
     },
-    payload: JSON.stringify({
-      status: "sent",
-      sent_at: new Date().toISOString()
-    }),
+    payload: JSON.stringify({ status: "sent", sent_at: new Date().toISOString() }),
     muteHttpExceptions: true
   });
-
   var status = response.getResponseCode();
   if (status !== 204) {
     SpreadsheetApp.getUi().alert("Supabase update failed (" + status + "): " + response.getContentText());
@@ -201,101 +63,45 @@ function updateStatus(outreachId) {
 function getOrCreateHubSpotContact(email, firstName, lastName, title, company) {
   var searchResponse = UrlFetchApp.fetch("https://api.hubapi.com/crm/v3/objects/contacts/search", {
     method: "post",
-    headers: {
-      Authorization: "Bearer " + HUBSPOT_API_KEY,
-      "Content-Type": "application/json"
-    },
-    payload: JSON.stringify({
-      filterGroups: [{
-        filters: [{
-          propertyName: "email",
-          operator: "EQ",
-          value: email
-        }]
-      }]
-    }),
+    headers: { Authorization: "Bearer " + HUBSPOT_API_KEY, "Content-Type": "application/json" },
+    payload: JSON.stringify({ filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: email }] }] }),
     muteHttpExceptions: true
   });
-
   var searchData = JSON.parse(searchResponse.getContentText());
-  if (searchData.total > 0) {
-    return searchData.results[0].id;
-  }
+  if (searchData.total > 0) return searchData.results[0].id;
 
   var createResponse = UrlFetchApp.fetch("https://api.hubapi.com/crm/v3/objects/contacts", {
     method: "post",
-    headers: {
-      Authorization: "Bearer " + HUBSPOT_API_KEY,
-      "Content-Type": "application/json"
-    },
-    payload: JSON.stringify({
-      properties: {
-        email: email,
-        firstname: firstName,
-        lastname: lastName,
-        jobtitle: title,
-        company: company
-      }
-    }),
+    headers: { Authorization: "Bearer " + HUBSPOT_API_KEY, "Content-Type": "application/json" },
+    payload: JSON.stringify({ properties: { email: email, firstname: firstName, lastname: lastName, jobtitle: title, company: company } }),
     muteHttpExceptions: true
   });
-
-  var createData = JSON.parse(createResponse.getContentText());
-  return createData.id;
+  return JSON.parse(createResponse.getContentText()).id;
 }
 
 function logEmailToHubSpot(contactId, subject, message) {
-  var now = new Date().getTime();
-  var payload = {
-    properties: {
-      hs_timestamp: now,
-      hs_email_direction: "EMAIL",
-      hs_email_status: "SENT",
-      hs_email_subject: subject,
-      hs_email_text: message
-    },
-    associations: [{
-      to: { id: contactId },
-      types: [{
-        associationCategory: "HUBSPOT_DEFINED",
-        associationTypeId: 198
-      }]
-    }]
-  };
-
   var response = UrlFetchApp.fetch("https://api.hubapi.com/crm/v3/objects/emails", {
     method: "post",
-    headers: {
-      Authorization: "Bearer " + HUBSPOT_API_KEY,
-      "Content-Type": "application/json"
-    },
-    payload: JSON.stringify(payload),
+    headers: { Authorization: "Bearer " + HUBSPOT_API_KEY, "Content-Type": "application/json" },
+    payload: JSON.stringify({
+      properties: { hs_timestamp: new Date().getTime(), hs_email_direction: "EMAIL", hs_email_status: "SENT", hs_email_subject: subject, hs_email_text: message },
+      associations: [{ to: { id: contactId }, types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 198 }] }]
+    }),
     muteHttpExceptions: true
   });
-
   var status = response.getResponseCode();
-  var body = response.getContentText();
-  if (status !== 201) {
-    throw new Error("HubSpot email log failed (" + status + "): " + body);
-  }
+  if (status !== 201) throw new Error("HubSpot email log failed (" + status + "): " + response.getContentText());
 }
 
 function sendSelectedLead() {
   try {
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
     var row = sheet.getActiveCell().getRow();
-
-    if (row <= 1) {
-      SpreadsheetApp.getUi().alert("Please select a lead row first.");
-      return;
-    }
+    if (row <= 1) { SpreadsheetApp.getUi().alert("Please select a lead row first."); return; }
 
     var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
     var values = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
-
-    function get(col) {
-      return values[headers.indexOf(col)] || "";
-    }
+    function get(col) { return values[headers.indexOf(col)] || ""; }
 
     var email = get("Email");
     var firstName = get("First Name");
@@ -306,18 +112,9 @@ function sendSelectedLead() {
     var outreachId = get("Outreach ID");
     var status = get("Status");
 
-    if (!email) {
-      SpreadsheetApp.getUi().alert("No email found for this lead.");
-      return;
-    }
-    if (status === "sent") {
-      SpreadsheetApp.getUi().alert("Already sent to " + email);
-      return;
-    }
-    if (!message) {
-      SpreadsheetApp.getUi().alert("No message found for this lead.");
-      return;
-    }
+    if (!email) { SpreadsheetApp.getUi().alert("No email found for this lead."); return; }
+    if (status === "sent") { SpreadsheetApp.getUi().alert("Already sent to " + email); return; }
+    if (!message) { SpreadsheetApp.getUi().alert("No message found for this lead."); return; }
 
     var subject = generateSubjectLine(message);
     var ui = SpreadsheetApp.getUi();
@@ -348,37 +145,23 @@ function sendSelectedLead() {
 function syncLeads() {
   try {
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-
     var response = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/outreach?select=id,message1,status,generated_at,leads(first_name,last_name,email,title,company_name,industry,headcount,linkedin_url,tech_stack,keywords)&order=generated_at.desc", {
       method: "get",
-      headers: {
-        apikey: SUPABASE_SERVICE_KEY,
-        Authorization: "Bearer " + SUPABASE_SERVICE_KEY,
-        "Content-Type": "application/json"
-      },
+      headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: "Bearer " + SUPABASE_SERVICE_KEY, "Content-Type": "application/json" },
       muteHttpExceptions: true
     });
-
     var status = response.getResponseCode();
     var body = response.getContentText();
-    if (status !== 200) {
-      throw new Error("Supabase error (" + status + "): " + body);
-    }
+    if (status !== 200) throw new Error("Supabase error (" + status + "): " + body);
 
     var rows = JSON.parse(body);
-    if (!rows.length) {
-      SpreadsheetApp.getUi().alert("No leads found.");
-      return;
-    }
+    if (!rows.length) { SpreadsheetApp.getUi().alert("No leads found."); return; }
 
     var headers = ["First Name", "Last Name", "Email", "Title", "Company", "Industry", "Headcount", "LinkedIn", "Tech Stack", "Keywords", "Message1", "Status", "Generated At", "Outreach ID"];
-
     sheet.clearContents();
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
     var headerRange = sheet.getRange(1, 1, 1, headers.length);
-    headerRange.setBackground("#1a1a2e");
-    headerRange.setFontColor("#ffffff");
-    headerRange.setFontWeight("bold");
+    headerRange.setBackground("#1a1a2e").setFontColor("#ffffff").setFontWeight("bold");
 
     var data = rows.map(function(row) {
       return [
@@ -403,10 +186,86 @@ function syncLeads() {
     sheet.autoResizeColumns(1, headers.length);
     sheet.getRange(2, 11, data.length, 1).setWrap(true);
     sheet.setColumnWidth(11, 400);
-
     SpreadsheetApp.getUi().alert("Synced " + rows.length + " leads.");
 
   } catch (err) {
     SpreadsheetApp.getUi().alert("Error: " + err.message);
+  }
+}
+
+function syncDashboard() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var dash = ss.getSheetByName("Dashboard");
+    if (!dash) { dash = ss.insertSheet("Dashboard"); }
+    dash.clearContents();
+    dash.clearFormats();
+
+    var response = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/outreach?select=status,generated_at,sent_at", {
+      method: "get",
+      headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: "Bearer " + SUPABASE_SERVICE_KEY, "Content-Type": "application/json" },
+      muteHttpExceptions: true
+    });
+    if (response.getResponseCode() !== 200) throw new Error("Supabase error: " + response.getContentText());
+    var rows = JSON.parse(response.getContentText());
+
+    var leadsResponse = UrlFetchApp.fetch(SUPABASE_URL + "/rest/v1/leads?select=id", {
+      method: "get",
+      headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: "Bearer " + SUPABASE_SERVICE_KEY, "Content-Type": "application/json" },
+      muteHttpExceptions: true
+    });
+    var totalLeads = JSON.parse(leadsResponse.getContentText()).length;
+
+    var totalSent = 0, totalPending = 0, sentToday = 0, sentThisWeek = 0;
+    var now = new Date();
+    var startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var startOfWeek = new Date(startOfToday);
+    startOfWeek.setDate(startOfToday.getDate() - startOfToday.getDay());
+
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (row.status === "sent") {
+        totalSent++;
+        if (row.sent_at) {
+          var sentAt = new Date(row.sent_at);
+          if (sentAt >= startOfToday) sentToday++;
+          if (sentAt >= startOfWeek) sentThisWeek++;
+        }
+      } else {
+        totalPending++;
+      }
+    }
+
+    var sentPct = rows.length > 0 ? Math.round((totalSent / rows.length) * 100) : 0;
+    var bg = "#1a1a2e", white = "#ffffff", green = "#c6efce", yellow = "#ffeb9c";
+
+    dash.getRange("A1:D1").merge().setValue("Speedrev Outreach Dashboard")
+      .setBackground(bg).setFontColor(white).setFontSize(16).setFontWeight("bold");
+    dash.getRange("A2:D2").merge().setValue("Last updated: " + now.toLocaleString())
+      .setFontColor("#888888").setFontSize(10);
+    dash.getRange(4, 1, 1, 2).setValues([["Metric", "Value"]])
+      .setBackground(bg).setFontColor(white).setFontWeight("bold");
+
+    var stats = [
+      ["Total Leads Loaded", totalLeads],
+      ["Messages Generated", rows.length],
+      ["Emails Sent", totalSent],
+      ["Emails Pending", totalPending],
+      ["Send Rate", sentPct + "%"],
+      ["Sent Today", sentToday],
+      ["Sent This Week", sentThisWeek]
+    ];
+
+    dash.getRange(5, 1, stats.length, 2).setValues(stats);
+    dash.getRange(7, 1, 1, 2).setBackground(green);
+    dash.getRange(8, 1, 1, 2).setBackground(yellow);
+    dash.setColumnWidth(1, 200);
+    dash.setColumnWidth(2, 120);
+    dash.getRange(5, 1, stats.length, 2).setBorder(true, true, true, true, true, true);
+    ss.setActiveSheet(dash);
+    SpreadsheetApp.getUi().alert("Dashboard updated.");
+
+  } catch (err) {
+    SpreadsheetApp.getUi().alert("Dashboard error: " + err.message);
   }
 }
