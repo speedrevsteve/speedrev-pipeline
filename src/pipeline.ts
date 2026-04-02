@@ -21,7 +21,7 @@ interface ApolloRow {
   "Last Name": string;
   Email: string;
   Title: string;
-  Company: string;
+  "Company Name": string;
   Industry: string;
   "# Employees": string;
   "Annual Revenue": string;
@@ -36,28 +36,41 @@ interface ApolloRow {
 
 // ── Message generation ────────────────────────────────────────────────────────
 async function generateMessage(lead: ApolloRow): Promise<string> {
-  const prompt = `You are an expert B2B sales copywriter for Speedrev, a GTM engineering consultancy that builds AI-powered outbound sales automation for recruiting agencies.
+  const prompt = `You are Steve, founder of Speedrev — a GTM engineering firm that builds AI-powered outbound systems for recruiting agencies.
 
-Write a short, highly personalized cold outreach message (Message1) for the following prospect.
+Write a cold email to ${lead["First Name"]} at ${lead["Company Name"]}.
 
-Rules:
-- 3-4 sentences max
-- Reference something specific from their metadata (title, company, industry, tech stack, or keywords)
-- Do NOT use generic openers like "I hope this finds you well"
-- End with a soft CTA — ask for a 15 min call or if they're open to a quick chat
-- Tone: confident, peer-to-peer, no fluff
-- Do NOT include a subject line, just the message body
+HARD RULES — violating any of these means the message is rejected:
+- Never start with "Noticed", "I noticed", "I saw", "I came across"
+- Never use "--" dashes
+- Never use made-up stats or percentages
+- Never say "15-minute call", "leverage", "utilize", "scale", "human capital", "talent acquisition", "outbound prospecting"
+- Never describe someone's job back to them in robotic HR language
+- Never invent details not explicitly in the metadata
+- If tech stack is just generic tools like Slack or Google, do not mention tech at all
+- 3 sentences max, no exceptions
+- No formal sign-off, no subject line
 
-Prospect metadata:
+TONE — sound like this:
+BAD: "Noticed you're scaling human capital businesses in Boston — curious how you're handling outbound prospecting."
+GOOD: "Running a recruiting firm in Boston right now seems brutal with how competitive the market's gotten."
+
+BAD: "We've helped similar firms 3x their candidate pipeline."
+GOOD: "We build the outbound system so your team can focus on the actual placements."
+
+BAD: "Would you be open to a quick 15-minute call?"
+GOOD: "Worth a chat?"  or  "Open to a quick call sometime?"
+
+The goal is one reply. Not a demo. Not a close. Just a reply.
+
+Metadata (only use what is concrete and specific):
 Name: ${lead["First Name"]} ${lead["Last Name"]}
 Title: ${lead["Title"]}
-Company: ${lead["Company"]}
+Company: ${lead["Company Name"]}
 Industry: ${lead["Industry"]}
-Headcount: ${lead["# Employees"]}
-Revenue: ${lead["Annual Revenue"]}
-Tech stack: ${lead["Technologies"]}
+Headcount: ${lead["# Employees"]} Tech stack: ${lead["Technologies"]}
 Keywords: ${lead["Keywords"]}
-Location: ${lead["City"]}, ${lead["State"]}, ${lead["Country"]}
+Location: ${lead["City"]}, ${lead["State"]}
 
 Write the message now:`;
 
@@ -108,7 +121,7 @@ async function run(csvPath: string) {
           last_name: row["Last Name"],
           email,
           title: row["Title"],
-          company_name: row["Company"],
+          company_name: row["Company Name"],
           industry: row["Industry"],
           headcount: row["# Employees"],
           revenue: row["Annual Revenue"],
@@ -143,11 +156,17 @@ async function run(csvPath: string) {
     }
 
     // 3. Insert outreach record
-    const { error: outreachError } = await supabase.from("outreach").insert({
+    // 3. Upsert outreach record
+const { error: outreachError } = await supabase
+  .from("outreach")
+  .upsert(
+    {
       lead_id: lead.id,
       message1,
       status: "new",
-    });
+    },
+    { onConflict: "lead_id" }
+  );
 
     if (outreachError) {
       console.error(`\n❌ Failed to insert outreach for ${email}: ${outreachError.message}`);
@@ -155,7 +174,7 @@ async function run(csvPath: string) {
       continue;
     }
 
-    console.log(` ✓ ${name} @ ${row["Company"]}`);
+    console.log(` ✓ ${name} @ ${row["Company Name"]}`);
     success++;
   }
 
