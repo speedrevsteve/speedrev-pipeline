@@ -1,8 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createClient } from "@supabase/supabase-js";
 import fs from "fs";
+import path from "path";
 import { parse } from "csv-parse/sync";
 import * as dotenv from "dotenv";
+import { google } from "googleapis";
 
 dotenv.config();
 
@@ -145,6 +147,86 @@ Write the message now:`;
   return (response.content[0] as { type: "text"; text: string }).text.trim();
 }
 
+// ── Google Sheets ─────────────────────────────────────────────────────────────
+async function createSheetForCsv(csvName: string, rows: any[]) {
+  const auth = new google.auth.GoogleAuth({
+    keyFile: path.join(process.cwd(), "credentials.json"),
+    scopes: ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"],
+    clientOptions: { subject: process.env.GOOGLE_SHARE_EMAIL },
+  });
+
+  const sheets = google.sheets({ version: "v4", auth });
+  const drive = google.drive({ version: "v3", auth });
+
+  // Copy template sheet (has Apps Script already attached)
+  const TEMPLATE_ID = "1cO0nVi1T93WuZIIhiDarxYxl06xjccg1kUUH2KkV6K0";
+  const FOLDER_ID = "1Nxgc_a5hyEL26ZlRSdxQUDYBJzmQUQ0_";
+
+  const file = await drive.files.copy({
+    fileId: TEMPLATE_ID,
+    requestBody: {
+      name: `Speedrev — ${csvName}`,
+      parents: [FOLDER_ID],
+    },
+    fields: "id",
+  });
+
+  const spreadsheetId = file.data.id!;
+
+  // Clear existing data from template (keep headers row)
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId,
+    range: "Leads!A2:Z",
+  });
+
+  const HEADERS = ["First Name", "Last Name", "Email", "Title", "Company", "Industry", "Headcount", "LinkedIn", "Tech Stack", "Keywords", "Message", "Message Type", "Send After", "Status", "Generated At", "Outreach ID"];
+
+  const sheetRows = [[...HEADERS]];
+  for (const row of rows) {
+    const lead = row.leads || {};
+    sheetRows.push([
+      lead.first_name || "", lead.last_name || "", lead.email || "",
+      lead.title || "", lead.company_name || "", lead.industry || "",
+      lead.headcount || "", lead.linkedin_url || "", lead.tech_stack || "", lead.keywords || "",
+      row.message1 || "", row.message_type || "", row.send_after || "",
+      row.status || "", row.generated_at || "", row.id || "",
+    ]);
+  }
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: "Leads!A1",
+    valueInputOption: "RAW",
+    requestBody: { values: sheetRows },
+  });
+
+  // Format header row
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [{
+        repeatCell: {
+          range: { sheetId: 0, startRowIndex: 0, endRowIndex: 1 },
+          cell: { userEnteredFormat: { backgroundColor: { red: 0.1, green: 0.1, blue: 0.18 }, textFormat: { foregroundColor: { red: 1, green: 1, blue: 1 }, bold: true } } },
+          fields: "userEnteredFormat(backgroundColor,textFormat)",
+        },
+      }],
+    },
+  });
+
+  // Share with your business email
+  if (process.env.GOOGLE_SHARE_EMAIL) {
+    await drive.permissions.create({
+      fileId: spreadsheetId,
+      requestBody: { type: "user", role: "writer", emailAddress: process.env.GOOGLE_SHARE_EMAIL },
+    });
+  }
+
+  const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}`;
+  console.log(`\n📊 Google Sheet created: ${url}`);
+  return url;
+}
+
 // ── Main pipeline ─────────────────────────────────────────────────────────────
 async function run(csvPath: string) {
   if (!fs.existsSync(csvPath)) {
@@ -276,6 +358,22 @@ async function run(csvPath: string) {
   console.log(`⚠️  Skipped:  ${skipped}`);
   console.log(`❌ Failed:   ${failed}`);
   console.log(`─────────────────────────────────────────\n`);
+
+  console.log(`📊 Creating Google Sheet...`);
+  const csvName = path.basename(csvPath, ".csv");
+  const csvEmails = rows.map(r => r["Email"]?.trim()).filter(Boolean);
+
+  const { data: outreachRows } = await supabase
+    .from("outreach")
+    .select("id,message1,status,message_type,send_after,generated_at,leads!inner(first_name,last_name,email,title,company_name,industry,headcount,linkedin_url,tech_stack,keywords)")
+    .in("leads.email", csvEmails)
+    .order("generated_at", { ascending: false });
+
+  if (outreachRows && outreachRows.length > 0) {
+    await createSheetForCsv(csvName, outreachRows);
+  } else {
+    console.log("No outreach data found for these leads.");
+  }
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────

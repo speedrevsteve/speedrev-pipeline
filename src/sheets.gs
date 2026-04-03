@@ -1,7 +1,7 @@
 const SUPABASE_URL = "https://bpdggmelglewdouwxjfm.supabase.co";
-const SUPABASE_SERVICE_KEY = "YOUR_SUPABASE_SERVICE_KEY";
-const ANTHROPIC_API_KEY = "YOUR_ANTHROPIC_API_KEY";
-const HUBSPOT_API_KEY = "YOUR_HUBSPOT_API_KEY";
+const SUPABASE_SERVICE_KEY = PropertiesService.getScriptProperties().getProperty("SUPABASE_SERVICE_KEY");
+const ANTHROPIC_API_KEY = PropertiesService.getScriptProperties().getProperty("ANTHROPIC_API_KEY");
+const HUBSPOT_API_KEY = PropertiesService.getScriptProperties().getProperty("HUBSPOT_API_KEY");
 
 var HEADERS = ["First Name", "Last Name", "Email", "Title", "Company", "Industry", "Headcount", "LinkedIn", "Tech Stack", "Keywords", "Message", "Message Type", "Send After", "Status", "Generated At", "Outreach ID"];
 
